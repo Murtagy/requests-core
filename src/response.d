@@ -1,3 +1,5 @@
+// ver 0.1
+
 import std.stdio: writeln, writefln;
 import std_socket = std.socket;
 import str = std.string;
@@ -6,55 +8,96 @@ import std.conv: to;
 import std.array : split;
 import std.typecons : Yes;
 
-debug = MYHTML;
+debug = RESPONSE;
 
-struct Response {
-    int status_code = 444;
-    string[string] headers;
-    string _headers; // to ptr
-    string content;  // to ptr
-    string _content; // to ptr
+struct Response {  // this structure will change to use some pointers probably later on
+    int             status_code = 444;
+    string[string]  headers;
+    string         _headers;
+    string[]        cookies;
+    string          content;
+    string         _content;
 };
 
-int main(string[] args)
-{
-// string url = args[1];
-// auto i = indexOf(url, "://");
-auto domain = "httpbin.org";
-auto url_path = "/image/jpeg";
-ushort port = 80;
+Response get(string url) {
+    // url contains http schema, host, path, query string
+    auto schema_end = 0;
+    writeln(url[0..7]);
+    bool is_http  = (url[0..7] == "http://");
+    bool is_https = (url[0..8] == "https://");
+    if  (is_http)   schema_end = 7;
+    if  (is_https)  schema_end = 8;
 
-debug (MYHTML)  writeln("Starting...");
+    debug(RESPONSE)  writefln("Schema ended at %d", schema_end);
+    auto host = url[schema_end..$]; // we start at calling everything host and then deduce it to port and path
 
-std_socket.InternetAddress internet_adress = new std_socket.InternetAddress(domain, port);
-std_socket.Socket socket = new std_socket.TcpSocket(internet_adress);
-scope(exit) socket.close();
+    debug(RESPONSE)  writefln("Host ... %s", host);
 
-debug (MYHTML)  writefln("Connecting domain \"%s\"...", domain);
+    auto path = "/";
+    long path_start = indexOf(host, '/');
+    if (path_start != -1)  {
+        path = host[path_start..$];
+        host = host[0..path_start];
 
-socket.send("GET " ~ url_path ~ " HTTP/1.0\r\n" ~
-            "Host: " ~ domain ~ "\r\n" ~
-            "\r\n"
-            );
-
-
-char[] _response;
-while (true) {
-    char[1] buf;
-    while(socket.receive(buf))
-    {
-        _response ~= buf;
-        // if (buf[0] == '\n')     break;
+        debug(RESPONSE)  writefln("Host ... %s", host);
+        debug(RESPONSE)  writefln("Path ... %s", path);
     }
-    break;
-    //  if (!_response.length) {
-            //  writeln("The line was not populated. Ending.");
-    //  }
+    ushort port = 80;
+    auto port_start = indexOf(host, ':');
+
+    debug(RESPONSE)  writefln("Port start ... %s", port_start);
+
+    if (port_start != -1) {
+        host = host[0..port_start];
+        port = to!ushort(host[port_start+1..$]);
+
+        debug(RESPONSE)  writefln("Host ... %s", host);
+        debug(RESPONSE)  writefln("Port ... %s", port);
+    }
+
+    auto query = "";
+    if path_start {
+        auto query_start = indexOf(path, '?');
+        if (query_start != -1) {
+            path = path[0..query_start];
+            query = path[query_start+1..$];
+        }
+    }
+    auto content = get_content(host, path, port);
+    return make_Response(content);
 }
-writeln("Receivied content:");
+
+string get_content(string host, string path, ushort port) {
+    std_socket.InternetAddress internet_adress = new std_socket.InternetAddress(host, port);
+    std_socket.Socket socket = new std_socket.TcpSocket(internet_adress);
+    scope(exit) socket.close();
+
+    debug (RESPONSE)  writefln("Connecting host \"%s\"...", host);
+
+    socket.send("GET " ~ path ~ " HTTP/1.0\r\n" ~
+                "Host: " ~ host ~ "\r\n" ~
+                "\r\n"
+                );
+
+    char[] _response;
+    while (true) {
+        char[1] buf;
+        while(socket.receive(buf))
+        {
+            _response ~= buf;
+            // if (buf[0] == '\n')     break;
+        }
+        break;
+        //  if (!_response.length) {  writeln("The line was not populated. Ending.");  }
+    }
+    debug (RESPONSE)  writeln("Receivied content:");
+    return to!string(_response);
+}
+
 
 Response make_Response(string _content) {
     // Below is a copy of comment from dlang-requests
+
     // Proper HTTP uses "\r\n" as a line separator, but broken servers sometimes use "\n".
     // Servers that use "\r\n" might have "\n" inside a header.
     // For any half-sane server, the first '\n' should be at the end of the status line, so this can be used to detect the line separator.
@@ -64,6 +107,7 @@ Response make_Response(string _content) {
     auto http_standard = "";
     auto status_code = 444; //Response.status_code;
     string[string] headers;
+    string[] cookies;
     auto _headers = "";
     string content;
 
@@ -78,16 +122,16 @@ Response make_Response(string _content) {
             auto http_standard_candidate = first_string[0];
             status_code = to!int(first_string[1]);
             writefln("Received status_code %d", status_code);
-            string[4] http_standards = ["HTTP/1.0", "HTTP/1.1", "HTTP/2", "HTTP/3"];
+            string[4] http_standards = ["HTTP/1.0", "HTTP/1.1", "HTTP/2", "HTTP/3"]; // on http 1.0, close is assumed (unlike http/1.1 where we assume keep alive)
             foreach(standard; http_standards)
                 {
                 // writeln(h);
                 if (http_standard_candidate==standard) {
                     http_standard = http_standard_candidate;
                     writefln("Found HTTP version, which is %s", http_standard);}
-                };
+                }
             continue;
-        };
+        }
         if (finding_headers)
         {
             if (line == "\n")    { finding_headers = false; continue;}
@@ -99,22 +143,33 @@ Response make_Response(string _content) {
             if ((delimiter_i <= 2) || (delimiter_i == line.length)) writefln("Bad header '%s'", line);
             else {
                 string key = line[0..delimiter_i];
-                string value = line[delimiter_i+1..line.length];
+                string value = line[delimiter_i+1..line.length];  // optimise to +2 and remove strip?
                 value = value.strip();
+                if (key == "cookie") {
+                    cookies ~= value;
+                    continue;
+                }
                 headers[key] = value;
                 writefln("Found the headers '%s' with value '%s'", key, value);
-            };
+            }
             continue;
-        };
+        }
         content ~= line;
     }
 
-    Response r = Response(status_code, headers, _headers, content, _content);
+    Response r = Response(status_code, headers, _headers, cookies, content, _content);
     return r;
-};
+}
 
-auto _r = to!string(_response);
-auto r = make_Response(_r);
-writeln(r.content);
+
+int main(string[] args)
+{
+debug (RESPONSE)  writeln("Starting...");
+auto url = "http://httpbin.org";
+auto r = get(url);
+writeln(r);
+
+
+
 return 0;
 }
