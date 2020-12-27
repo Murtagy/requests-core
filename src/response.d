@@ -1,11 +1,11 @@
 // ver 0.1
 
-import std.stdio: writeln, writefln;
-import std_socket = std.socket;
-import str = std.string;
-import std.string: lineSplitter, indexOf, strip;
-import std.conv: to;
+import std.json: JSONValue, parseJSON;
+
 import std.array : split;
+import std.conv: to;
+import std.stdio: writeln, writefln;
+import std.string: format, indexOf, lineSplitter, strip;
 import std.typecons : Yes;
 
 debug = RESPONSE;
@@ -56,7 +56,7 @@ Response get(string url) {
     }
 
     auto query = "";
-    if path_start {
+    if (path_start) {
         auto query_start = indexOf(path, '?');
         if (query_start != -1) {
             path = path[0..query_start];
@@ -68,8 +68,10 @@ Response get(string url) {
 }
 
 string get_content(string host, string path, ushort port) {
-    std_socket.InternetAddress internet_adress = new std_socket.InternetAddress(host, port);
-    std_socket.Socket socket = new std_socket.TcpSocket(internet_adress);
+    import std.socket: InternetAddress, Socket, TcpSocket;
+
+    InternetAddress internet_adress = new InternetAddress(host, port);
+    Socket socket = new TcpSocket(internet_adress);
     scope(exit) socket.close();
 
     debug (RESPONSE)  writefln("Connecting host \"%s\"...", host);
@@ -161,14 +163,34 @@ Response make_Response(string _content) {
     return r;
 }
 
+void raise_for_status(Response r) {
+    if (r.status_code >= 400 && r.status_code < 500) {
+        throw new Exception(format("Client error: %d", r.status_code));
+    }
+    if (r.status_code >= 500 && r.status_code < 600) {
+        throw new Exception(format("Server error: %d", r.status_code));
+    }
+}
+alias throw_for_status = raise_for_status;
+
+
+JSONValue json(Response r){
+    return parseJSON(r.content);
+};
+
 
 int main(string[] args)
 {
-debug (RESPONSE)  writeln("Starting...");
-auto url = "http://httpbin.org";
-auto r = get(url);
-writeln(r);
 
+
+debug (RESPONSE)  writeln("Starting...");
+auto url = "https://httpbin.org/get";
+auto r = get(url);
+
+r.raise_for_status();
+JSONValue j = r.json();
+
+writeln(j);
 
 
 return 0;
