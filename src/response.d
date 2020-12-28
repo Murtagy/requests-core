@@ -1,9 +1,10 @@
-// ver 0.1
+// ver 0.11
 
 import std.json: JSONValue, parseJSON;
 
 import std.array : split;
 import std.conv: to;
+import std.datetime: dur, Duration;
 import std.stdio: writeln, writefln;
 import std.string: format, indexOf, lineSplitter, strip;
 import std.typecons : Yes;
@@ -19,7 +20,25 @@ struct Response {  // this structure will change to use some pointers probably l
     string         _content;
 };
 
-Response get(string url) {
+struct Timeout {
+    Duration             send_timeout     =        dur!"seconds"(3);
+    Duration             read_timeout     =        dur!"seconds"(30);
+}
+
+struct RequestParams {
+    string[string]   headers;
+    string[string]   cookies;
+    string[string]   params;
+    string[string]   proxies;
+    string[2]        auth;
+    Timeout          timeout          =      Timeout();
+    bool             allow_redirects  =      true;
+}
+
+Response get(string        url,
+             RequestParams get_params = RequestParams()  // you will have to use extra line to set it, sorry
+            )
+   {
     // url contains http schema, host, path, query string
     auto schema_end = 0;
     writeln(url[0..7]);
@@ -63,15 +82,21 @@ Response get(string url) {
             query = path[query_start+1..$];
         }
     }
-    auto content = get_content(host, path, port);
+    auto content = get_content(host, path, port, get_params.timeout);
     return make_Response(content);
 }
 
-string get_content(string host, string path, ushort port) {
-    import std.socket: InternetAddress, Socket, TcpSocket;
+string get_content(string   host,
+                   string   path,
+                   ushort   port,
+                   Timeout  timeout,
+    ) {
+    import std.socket: InternetAddress, Socket, SocketOption, SocketOptionLevel, TcpSocket;
 
-    InternetAddress internet_adress = new InternetAddress(host, port);
-    Socket socket = new TcpSocket(internet_adress);
+    auto internet_adress = new InternetAddress(host, port);
+    auto socket = new TcpSocket(internet_adress);
+    socket.setOption(SocketOptionLevel.SOCKET, SocketOption.RCVTIMEO, timeout.read_timeout);
+    socket.setOption(SocketOptionLevel.SOCKET, SocketOption.SNDTIMEO, timeout.send_timeout);
     scope(exit) socket.close();
 
     debug (RESPONSE)  writefln("Connecting host \"%s\"...", host);
@@ -185,7 +210,10 @@ int main(string[] args)
 
 debug (RESPONSE)  writeln("Starting...");
 auto url = "https://httpbin.org/get";
-auto r = get(url);
+auto get_params = RequestParams();
+get_params.timeout = Timeout(dur!"seconds"(1), dur!"seconds"(1));
+
+auto r = get(url, get_params);
 
 r.raise_for_status();
 JSONValue j = r.json();
