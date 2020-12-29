@@ -1,10 +1,9 @@
 // ver 0.11
 
-import std.json: JSONValue, parseJSON;
-
 import std.array : split;
 import std.conv: to;
 import std.datetime: dur, Duration;
+import std.json: JSONValue, parseJSON;
 import std.stdio: writeln, writefln;
 import std.string: format, indexOf, lineSplitter, strip;
 import std.typecons : Yes;
@@ -26,6 +25,7 @@ struct Timeout {
 }
 
 struct RequestParams {
+    string body;
     string[string]   headers;
     string[string]   cookies;
     string[string]   params;
@@ -48,11 +48,27 @@ Response get(string        url,
             )
    {
     auto parsed_url = make_Url(url);
-    auto content = get_content("GET", parsed_url, get_params);
+    auto content = execute("GET", parsed_url, get_params);
     return make_Response(content);
 }
 
-string get_content(string method, Url url, RequestParams  request_params) {
+Response post(string url,
+              string body,
+              RequestParams post_params = RequestParams()  // you will have to use extra line to set it, sorry
+) {
+    auto parsed_url = make_Url(url);
+    if ((body != "") && (post_params.body != "")) throw new Exception("Only parameter for body can be specified");
+    if ((body == "")  && (post_params.body == "")) throw new Exception("POST request with no body can not be sent");
+
+    if (body != "") post_params.body = body;
+    post_params.headers["Content-Length"] = to!string(body.length); // presence of body is read by presence of Content-Length
+    debug(RESPONSE) writefln("POST body: %s", post_params.body);
+
+    auto content = execute("POST", parsed_url, post_params);
+    return make_Response(content);
+}
+
+string execute(string method, Url url, RequestParams  request_params) {
     import std.socket: InternetAddress, Socket, SocketOption, SocketOptionLevel, TcpSocket;
 
     auto internet_adress = new InternetAddress(url.host, url.port);
@@ -67,6 +83,7 @@ string get_content(string method, Url url, RequestParams  request_params) {
                 "Host: " ~ url.host ~ "\r\n" ~
                 stringify_headers(request_params.headers) ~
                 "\r\n"
+                ~ request_params.body
                 );
 
     char[] _response;
@@ -161,6 +178,7 @@ Response make_Response(string _content) {
 
     auto i = 0;
     bool finding_headers = true;
+    bool need_check_content_length = true;
     foreach(line; lineSplitter!(Yes.keepTerminator)(_content))  //No.keepTerminator,
     {
         i++;
@@ -180,8 +198,7 @@ Response make_Response(string _content) {
                 }
             continue;
         }
-        if (finding_headers)
-        {
+        if (finding_headers) {
             if (line == "\n")    { finding_headers = false; continue;}
             if (line == "\r\n")  { finding_headers = false; continue;}
 
@@ -193,7 +210,7 @@ Response make_Response(string _content) {
                 string key = line[0..delimiter_i];
                 string value = line[delimiter_i+1..line.length];  // optimise to +2 and remove strip?
                 value = value.strip();
-                if (key == "cookie") {
+                if (key == "cookie" || key == "Set-Cookie") {
                     cookies ~= value;
                     continue;
                 }
@@ -202,6 +219,9 @@ Response make_Response(string _content) {
             }
             continue;
         }
+        else if (need_check_content_length)
+                if ("Content-Length" in headers) need_check_content_length = false;
+                else break; // no body/content excpected
         content ~= line;
     }
 
@@ -228,20 +248,18 @@ JSONValue json(Response r){
 int main(string[] args)
 {
 
-
 debug (RESPONSE)  writeln("Starting...");
-auto url = "https://httpbin.org/headers";
+auto url = "https://httpbin.org/post";
 auto get_params = RequestParams();
 get_params.timeout = Timeout(dur!"seconds"(1), dur!"seconds"(1));
 get_params.headers = ["Test1": "123", "Test2": "321"];
 
-auto r = get(url, get_params);
+auto r = post(url, "THEE BOOODY", get_params);
 
 r.raise_for_status();
 JSONValue j = r.json();
 
 writeln(j);
-
 
 return 0;
 }
