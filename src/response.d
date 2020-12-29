@@ -35,17 +35,64 @@ struct RequestParams {
     bool             allow_redirects  =      true;
 }
 
+struct Url {
+    string  schema;
+    string  host;
+    ushort  port;
+    string  path;
+    string  query;
+}
+
 Response get(string        url,
              RequestParams get_params = RequestParams()  // you will have to use extra line to set it, sorry
             )
    {
-    // url contains http schema, host, path, query string
+    auto parsed_url = make_Url(url);
+    auto content = get_content("GET", parsed_url, get_params);
+    return make_Response(content);
+}
+
+string get_content(string method, Url url, RequestParams  request_params) {
+    import std.socket: InternetAddress, Socket, SocketOption, SocketOptionLevel, TcpSocket;
+
+    auto internet_adress = new InternetAddress(url.host, url.port);
+    auto socket = new TcpSocket(internet_adress);
+    socket.setOption(SocketOptionLevel.SOCKET, SocketOption.RCVTIMEO, request_params.timeout.read_timeout);
+    socket.setOption(SocketOptionLevel.SOCKET, SocketOption.SNDTIMEO, request_params.timeout.send_timeout);
+    scope(exit) socket.close();
+
+    debug (RESPONSE)  writefln("Connecting host \"%s\"...", url.host);
+
+    socket.send(method ~ " " ~ url.path ~ " HTTP/1.0"~ "\r\n" ~
+                "Host: " ~ url.host ~ "\r\n" ~
+                stringify_headers(request_params.headers) ~
+                "\r\n"
+                );
+
+    char[] _response;
+    while (true) {
+        char[1] buf;
+        while(socket.receive(buf))
+        {
+            _response ~= buf;
+            // if (buf[0] == '\n')     break;
+        }
+        break;
+        //  if (!_response.length) {  writeln("The line was not populated. Ending.");  }
+    }
+    debug (RESPONSE)  writeln("Receivied content:");
+    return to!string(_response);
+}
+
+Url make_Url(string url) {
     auto schema_end = 0;
     writeln(url[0..7]);
     bool is_http  = (url[0..7] == "http://");
     bool is_https = (url[0..8] == "https://");
     if  (is_http)   schema_end = 7;
-    if  (is_https)  schema_end = 8;
+    else if  (is_https)  schema_end = 8;
+    else throw new Exception(format("No valid http schema provided in url %s", url));
+    auto schema = url[0..schema_end];
 
     debug(RESPONSE)  writefln("Schema ended at %d", schema_end);
     auto host = url[schema_end..$]; // we start at calling everything host and then deduce it to port and path
@@ -74,6 +121,8 @@ Response get(string        url,
         debug(RESPONSE)  writefln("Port ... %s", port);
     }
 
+    debug(RESPONSE)  writefln("Path start ... %s", path_start);
+
     auto query = "";
     if (path_start) {
         auto query_start = indexOf(path, '?');
@@ -82,45 +131,17 @@ Response get(string        url,
             query = path[query_start+1..$];
         }
     }
-    auto content = get_content(host, path, port, get_params.timeout);
-    return make_Response(content);
+
+    return Url(schema, host, port, path, query);
 }
 
-string get_content(string   host,
-                   string   path,
-                   ushort   port,
-                   Timeout  timeout,
-    ) {
-    import std.socket: InternetAddress, Socket, SocketOption, SocketOptionLevel, TcpSocket;
-
-    auto internet_adress = new InternetAddress(host, port);
-    auto socket = new TcpSocket(internet_adress);
-    socket.setOption(SocketOptionLevel.SOCKET, SocketOption.RCVTIMEO, timeout.read_timeout);
-    socket.setOption(SocketOptionLevel.SOCKET, SocketOption.SNDTIMEO, timeout.send_timeout);
-    scope(exit) socket.close();
-
-    debug (RESPONSE)  writefln("Connecting host \"%s\"...", host);
-
-    socket.send("GET " ~ path ~ " HTTP/1.0\r\n" ~
-                "Host: " ~ host ~ "\r\n" ~
-                "\r\n"
-                );
-
-    char[] _response;
-    while (true) {
-        char[1] buf;
-        while(socket.receive(buf))
-        {
-            _response ~= buf;
-            // if (buf[0] == '\n')     break;
-        }
-        break;
-        //  if (!_response.length) {  writeln("The line was not populated. Ending.");  }
+string stringify_headers(string[string] headers) {
+    auto s = "";
+    foreach(key, value; headers){
+        s ~= key ~ ": " ~ value ~ "\r\n";
     }
-    debug (RESPONSE)  writeln("Receivied content:");
-    return to!string(_response);
+    return s;
 }
-
 
 Response make_Response(string _content) {
     // Below is a copy of comment from dlang-requests
@@ -209,9 +230,10 @@ int main(string[] args)
 
 
 debug (RESPONSE)  writeln("Starting...");
-auto url = "https://httpbin.org/get";
+auto url = "https://httpbin.org/headers";
 auto get_params = RequestParams();
 get_params.timeout = Timeout(dur!"seconds"(1), dur!"seconds"(1));
+get_params.headers = ["Test1": "123", "Test2": "321"];
 
 auto r = get(url, get_params);
 
